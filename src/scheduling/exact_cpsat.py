@@ -26,10 +26,15 @@ SCALE = 10
 
 
 class CpSatScheduler:
-    """SchedulerAdapter 实现：min C_max 精确求解（返回单元素解列表）。"""
+    """SchedulerAdapter 实现：min C_max 精确求解（返回单元素解列表）。
 
-    def __init__(self, time_limit_s: float = 60.0):
+    require_optimal=True（默认）用于判定性验证（金标 A03/A10 需最优性证明）；
+    False 时接受时限内最好可行解（实验框架在中等规模示例数据上使用）。
+    """
+
+    def __init__(self, time_limit_s: float = 60.0, require_optimal: bool = True):
         self.time_limit_s = time_limit_s
+        self.require_optimal = require_optimal
 
     def solve(
         self, problem: ProblemData, jobs: list[Job], tau: int, seed: int | None = None
@@ -159,7 +164,7 @@ class CpSatScheduler:
         status = solver.Solve(m)
         if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             raise ValueError(f"CP-SAT 无可行调度（status={solver.StatusName(status)}）")
-        if status != cp_model.OPTIMAL:
+        if status != cp_model.OPTIMAL and self.require_optimal:
             raise ValueError(
                 f"CP-SAT 未在 {self.time_limit_s}s 内证明最优（判定性用途需最优解）"
             )
@@ -185,7 +190,10 @@ class CpSatScheduler:
 
         sol = evaluate_schedule(problem, jobs, tau, assignment, sequence)
         exact_cmax = solver.Value(cmax) / SCALE
-        if abs(sol.cmax - exact_cmax) > 1e-6:
+        # 最优模式下两者必须相等；非最优模式允许评价器（最早开工重演）改进
+        if sol.cmax > exact_cmax + 1e-6 or (
+            status == cp_model.OPTIMAL and abs(sol.cmax - exact_cmax) > 1e-6
+        ):
             raise AssertionError(
                 f"评价器与 CP-SAT 时间轴不一致：{sol.cmax} vs {exact_cmax}"
             )

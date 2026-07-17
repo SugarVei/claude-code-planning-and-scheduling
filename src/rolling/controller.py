@@ -122,8 +122,13 @@ def run_rolling(
     scheduler: SchedulerAdapter,
     config: FeedbackConfig = FeedbackConfig(),
     base_seed: int = 0,
+    force_freeze_k0: bool = False,
 ) -> RollingResult:
-    """执行完整滚动闭环（τ = 1..T_max，H_f=1 逐周期冻结）。"""
+    """执行完整滚动闭环（τ = 1..T_max，H_f=1 逐周期冻结）。
+
+    force_freeze_k0=True：k=0 计划无条件冻结（不做反馈迭代与保护处理），
+    即实验方案 B"滚动但无反馈"；通常与全关 FeedbackConfig 搭配。
+    """
     inv = {p: float(problem.init_inventory[p]) for p in problem.products}
     back = {p: 0.0 for p in problem.products}
     result = RollingResult()
@@ -224,6 +229,10 @@ def run_rolling(
                 freeze=FreezeCheck(feas_ok, cmax_ok, no_new_cuts, stable, frozen, kmax_forced),
             )
             iterations.append(record)
+            if force_freeze_k0:
+                record.freeze.frozen = True
+                frozen_record = record
+                break
             if frozen:
                 frozen_record = record
                 break

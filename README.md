@@ -27,6 +27,11 @@ src/feedback/cuts.py            # 三步割判据+加班型守卫（式5-6/5-9/5
 src/feedback/protection.py      # 保护处理（式3-9 冲抵口径 + K_max 移出次序）
 src/feedback/channels.py        # 三通道折算（式5-1~5-5）+ FeedbackConfig 开关
 src/rolling/controller.py       # 滚动主循环（算法5-1：冻结四条件/K_max 保护/状态更新）
+src/experiments/                # 方案A~D、指标计算、消融/敏感性、表5-1~5-4导出
+src/data/sample_data.py         # "Y企业风格"示例数据集生成器（显式示例标注）
+data/sample_y_style.xlsx        # 示例数据集（模板格式；非企业真实数据）
+scripts/run_sample_experiments.py  # 示例数据全套实验一键运行
+results/sample_y_style/         # 示例实验导出（表5-1~5-4 CSV + 汇总xlsx）
 vendor_nsga/                    # 论文配套算法源码（只读，见其 README 溯源）
 tests/test_vtoy1_workbook.py    # 金标工作簿完整性回归（锁定关键参数与触发机关）
 tests/test_regression_vtoy1.py  # A01~A14 断言（随实现逐步点亮）
@@ -43,7 +48,7 @@ pytest -m regression
 **任何阶段结束时本套件必须全绿（无 FAILED）**；金标数据 `data/vtoy1.xlsx`
 的任何意外改动都会使完整性测试变红。
 
-## 当前状态（Stage 5 已完成：闭环打通，A01~A14 全部点亮）
+## 当前状态（Stage 6 已完成：示例数据与实验框架）
 
 本仓库从零构建（不存在历史 V-toy 实现），Stage 0 冻结的基线为
 **金标算例数据 + A01~A14 断言规格**（tag: `stage0-foundation`）。
@@ -72,7 +77,14 @@ pytest -m regression
   冻结四条件（式3-19~3-22）；K_max 保护处理（算法5-1 第23~32行，含
   O^unfin 登记）；`FeedbackConfig` 三通道独立开关（禁用走日志）；
   金标闭环轨迹逐周期复现（CP-SAT 确定性调度器）；
+- Stage 6：示例数据与实验框架 —— "Y企业风格"示例数据集（模板格式，
+  6 族/8 型号/3 阶段 8 机/10 周期/28 订单，显式示例标注）+ 模板正式
+  读入器（型号→族聚合、日期→周期、θ 反推校验）；方案 A（静态两阶段）/
+  B（滚动无反馈）/C（完整三通道）/D（去成本修正）；五项指标；
+  FeedbackConfig 一键消融 + 权重敏感性批量实验；表5-1~5-4 与图5-2
+  数据导出（CSV utf-8-sig + 汇总 xlsx）；
 - 回归进度：**A01~A14 全部点亮（14/14）**；
-- 测试合计：96 通过，0 跳过。
+- 测试合计：109 通过，0 跳过。
 
-下一阶段：Stage 6 —— 示例数据 + 实验框架（方案 A~D、消融、敏感性、导出）。
+剩余：Stage 7（可选薄壳 CLI）。示例实验一键复跑：
+`python3 scripts/run_sample_experiments.py`。

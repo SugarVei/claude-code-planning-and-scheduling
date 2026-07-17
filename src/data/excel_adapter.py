@@ -240,3 +240,234 @@ def load_y_template_structure(path: str | Path) -> dict[str, list[TemplateTable]
                 tables.append(TemplateTable(title=first, headers=headers))
         structure[ws.title] = tables
     return structure
+
+
+# ── Y企业模板正式读入器（Stage 6：字段 → ProblemData 对齐）─────────
+
+
+def _table_rows(ws, title_prefix: str) -> list[tuple]:
+    """取"表x-y"标题行之后的数据行（跳过表头行，读到空行/下一表为止）。"""
+    rows = list(ws.iter_rows(values_only=True))
+    out: list[tuple] = []
+    in_table = header_skipped = False
+    for row in rows:
+        first = row[0] if row else None
+        if isinstance(first, str) and first.startswith(title_prefix):
+            in_table, header_skipped = True, False
+            continue
+        if in_table:
+            if not header_skipped:
+                header_skipped = True
+                continue
+            if first is None or (isinstance(first, str) and first.startswith("表")):
+                break
+            out.append(row)
+    return out
+
+
+def load_y_style(
+    path: str | Path,
+    *,
+    horizon_window: int = 3,
+    horizon_freeze: int = 1,
+    k_max: int = 3,
+    epsilon_converge: float = 0.01,
+    feedback_weights: tuple[float, float, float] = (0.50, 0.30, 0.20),
+    gamma: float = 0.5,
+    delta_max: float = 1.0,
+    n_restart: int = 3,
+    kappa: tuple[float, float, float, float] = (2.0, 1.0, 0.05, 0.5),
+    rho_min: float = 0.8,
+) -> ProblemData:
+    """读入 Y企业模板格式工作簿（含示例数据集）构造 ProblemData。
+
+    滚动/反馈算法参数不属于企业采集范围（模板"填写说明"注明由研究方标定），
+    经关键字参数传入，默认取论文既定值/V-toy 口径。
+    型号级数据按 表1-2 对照聚合为产品族级（族内型号参数一致，取首个并校验）。
+    """
+    from datetime import date, timedelta  # noqa: F401
+
+    wb = openpyxl.load_workbook(path, data_only=True)
+    s1, s2, s3 = wb["一 订单与需求"], wb["二 成本参数"], wb["三 车间结构与工艺"]
+    s4, s5, s6 = wb["四 能耗参数"], wb["五 人力资源"], wb["六 日历与产能"]
+
+    # 表6-1：日历参数
+    cal = {r[0]: r[1] for r in _table_rows(s6, "表6-1")}
+    t_avail = float(cal["每班标准工时"]) * float(cal.get("每日班次数", 1))
+    ot_max = float(cal["单日加班上限"])
+    period_days = int(cal.get("计划周期长度", 1))
+    start = date.fromisoformat(str(cal["排产起始日期"]))
+    t_max = int(cal["计划周期数"])
+    periods = list(range(1, t_max + 1))
+
+    def to_period(d) -> int:
+        dd = d.date() if hasattr(d, "date") else date.fromisoformat(str(d))
+        return (dd - start).days // period_days + 1
+
+    # 表1-2：型号 → 族
+    fam_of = {str(r[0]): str(r[2]) for r in _table_rows(s1, "表1-2")}
+    products = sorted(set(fam_of.values()))
+
+    # 表1-1：订单（型号聚合为族；到达周期下限钳为 1）
+    orders = [
+        Order(
+            order_id=str(r[0]),
+            product=fam_of[str(r[1])],
+            quantity=int(r[2]),
+            due_period=to_period(r[4]),
+            arrival_period=max(1, to_period(r[3])),
+        )
+        for r in _table_rows(s1, "表1-1")
+    ]
+
+    # 表1-3：期初库存（按族求和）
+    init_inv = {p: 0.0 for p in products}
+    for r in _table_rows(s1, "表1-3"):
+        init_inv[fam_of[str(r[0])]] += float(r[1] or 0)
+
+    # 表2-1：成本（族内取首个型号，校验一致）
+    cost_prod, cost_inv, cost_back, cost_setup = {}, {}, {}, {}
+    for r in _table_rows(s2, "表2-1"):
+        fam = fam_of[str(r[0])]
+        vals = (float(r[1]), float(r[2]), float(r[3]), float(r[4]))
+        if fam in cost_prod:
+            if (cost_prod[fam], cost_inv[fam], cost_back[fam], cost_setup[fam]) != vals:
+                raise ValueError(f"族 {fam} 内型号成本不一致（族级模型要求一致）")
+        cost_prod[fam], cost_inv[fam], cost_back[fam], cost_setup[fam] = vals
+
+    # 表3-1：阶段与机器
+    stage_names: dict[int, str] = {}
+    machines: dict[int, list[str]] = {}
+    n_gears = 0
+    for r in _table_rows(s3, "表3-1"):
+        j = int(r[0])
+        stage_names[j] = str(r[1])
+        machines.setdefault(j, []).append(str(r[2]))
+        n_gears = max(n_gears, int(r[4]))
+    stages = sorted(stage_names)
+    speed_gears = list(range(1, n_gears + 1))
+
+    # 表3-2：单件加工时间（档位1 为基准；θ_s 由比值推出并校验一致）
+    proc_time: dict[str, dict[int, float]] = {p: {} for p in products}
+    theta_samples: dict[int, list[float]] = {s: [] for s in speed_gears}
+    base_time: dict[tuple[str, int], float] = {}
+    rows32 = _table_rows(s3, "表3-2")
+    for r in rows32:
+        model, j, s, t = str(r[0]), int(r[1]), int(r[3]), float(r[4])
+        if s == 1:
+            base_time[(model, j)] = t
+            fam = fam_of[model]
+            if j in proc_time[fam] and abs(proc_time[fam][j] - t) > 1e-9:
+                raise ValueError(f"族 {fam} 阶段 {j} 型号间基准工时不一致")
+            proc_time[fam][j] = t
+    for r in rows32:
+        model, j, s, t = str(r[0]), int(r[1]), int(r[3]), float(r[4])
+        theta_samples[s].append(t / base_time[(model, j)])
+    speed_factor = {}
+    for s in speed_gears:
+        vals = theta_samples[s]
+        speed_factor[s] = round(sum(vals) / len(vals), 6)
+        if max(vals) - min(vals) > 1e-6:
+            raise ValueError(f"档位 {s} 的速度系数在型号/阶段间不一致")
+
+    # 表3-3：SDST（族级，"开机"行 → 初始设置）
+    initial_setup: dict[str, float] = {}
+    sdst = {a: {b: 0.0 for b in products} for a in products}
+    for r in _table_rows(s3, "表3-3"):
+        prev, nxt, t = str(r[2]), str(r[3]), float(r[4])
+        if prev == "开机":
+            initial_setup[nxt] = t
+        else:
+            sdst[prev][nxt] = t
+
+    # 表3-4 / 表3-6
+    trans_rows = _table_rows(s3, "表3-4")
+    transport_time = sum(float(r[2]) for r in trans_rows) / len(trans_rows)
+    lot_size_max: dict[str, int] = {}
+    for r in _table_rows(s3, "表3-6"):
+        lot_size_max[fam_of[str(r[0])]] = int(r[1])
+
+    # 表4-1 / 表4-2：能耗
+    power_proc: dict[int, float] = {}
+    se = ie = None
+    for r in _table_rows(s4, "表4-1"):
+        power_proc[int(r[2])] = float(r[3])
+        se = float(r[4]) if se is None else se
+        ie = float(r[5]) if ie is None else ie
+    misc = {str(r[0]): float(r[1]) for r in _table_rows(s4, "表4-2")}
+    te = misc["单次运输能耗"] * 60.0 / transport_time  # kWh/次 → kW·min/min
+    ae = misc["车间辅助功率"]
+
+    # 表5-1 / 表5-2：技能与可用性
+    skill_levels: list[int] = []
+    worker_wage: dict[int, float] = {}
+    for r in _table_rows(s5, "表5-1"):
+        lv = int(r[0])
+        skill_levels.append(lv)
+        worker_wage[lv] = float(r[3])
+        if int(r[2]) != lv:
+            raise ValueError("向下兼容口径要求 可操作最高档位 = 技能等级")
+    skill_levels.sort()
+    default_avail: dict[int, int] | None = None
+    overrides: dict[int, dict[int, int]] = {}
+    for r in _table_rows(s5, "表5-2"):
+        counts = {lv: int(r[i + 1]) for i, lv in enumerate(skill_levels)}
+        if str(r[0]) == "常态配置":
+            default_avail = counts
+        else:
+            overrides[to_period(r[0])] = counts
+    worker_available = {
+        lv: {
+            t: overrides.get(t, default_avail)[lv] for t in periods
+        }
+        for lv in skill_levels
+    }
+
+    problem = ProblemData(
+        products=products,
+        periods=periods,
+        stages=stages,
+        stage_names=stage_names,
+        machines=machines,
+        speed_gears=speed_gears,
+        skill_levels=skill_levels,
+        cost_prod=cost_prod,
+        cost_inv=cost_inv,
+        cost_back=cost_back,
+        cost_setup=cost_setup,
+        lot_size_max=lot_size_max,
+        capacity={j: {t: t_avail * len(machines[j]) for t in periods} for j in stages},
+        init_inventory=init_inv,
+        t_avail=t_avail,
+        ot_max=ot_max,
+        orders=orders,
+        proc_time=proc_time,
+        speed_factor=speed_factor,
+        sdst=sdst,
+        initial_setup=initial_setup,
+        worker_wage=worker_wage,
+        worker_available=worker_available,
+        transport_time=transport_time,
+        energy=EnergyParams(
+            power_proc=power_proc,
+            power_setup=se,
+            power_idle=ie,
+            energy_transport=te,
+            power_aux=ae,
+        ),
+        horizon_window=horizon_window,
+        horizon_freeze=horizon_freeze,
+        k_max=k_max,
+        epsilon_converge=epsilon_converge,
+        feedback_weights=feedback_weights,
+        gamma=gamma,
+        delta_max=delta_max,
+        n_restart=n_restart,
+        kappa_c=kappa[0],
+        kappa_l=kappa[1],
+        kappa_e=kappa[2],
+        kappa_s=kappa[3],
+        rho_min=rho_min,
+    )
+    validate_problem_data(problem)
+    return problem
