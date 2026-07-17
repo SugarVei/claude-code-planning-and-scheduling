@@ -1,12 +1,10 @@
-"""V-toy-1 金标回归断言 A01~A14（规格占位，随实现逐步点亮）。
+"""V-toy-1 金标回归断言 A01~A14（随实现逐步点亮）。
 
 断言原文取自金标工作簿 data/vtoy1.xlsx '6_断言清单'（每个测试的
-docstring 即断言规格与论文对应位置）。V-toy 闭环实现尚不存在
-（本仓库从零构建，见 docs/SYSTEM_DESIGN.md Stage 1~5），因此每条
-断言当前以 skip 占位；对应机制实现后，将 skip 替换为对闭环运行
-结果的真实断言。点亮进度即各 Stage 的验收进度：
+docstring 即断言规格与论文对应位置）。本仓库从零构建（见
+docs/SYSTEM_DESIGN.md Stage 1~5），断言随各阶段实现逐条点亮：
 
-  Stage 1（ProblemData/Excel 适配）后可点亮：A01, A02
+  已点亮：A01, A02（Stage 1：数据层 + 子批化映射 + SDST 查表）
   Stage 3（调度适配器）后可点亮：A03, A04, A05, A14
   Stage 2+5（计划层/滚动闭环）后可点亮：A06, A07, A08, A09
   Stage 4（保护处理/割判据守卫）后可点亮：A10, A11, A12, A13
@@ -15,23 +13,61 @@ docstring 即断言规格与论文对应位置）。V-toy 闭环实现尚不存�
 """
 import pytest
 
+from src.data.lot_sizing import build_jobs, processing_time, split_lots
+
 pytestmark = pytest.mark.regression
 
 NOT_IMPLEMENTED = "V-toy 闭环尚未实现（从零构建，Stage 1+ 逐步点亮）——本测试为断言规格占位"
 
 
-def test_a01_lot_sizing():
+def test_a01_lot_sizing(vtoy1_problem):
     """A01（4.8.1节）：子批化。
 
     n_A,1 = ⌈12/4⌉ = 3（批量 4,4,4）、n_B,1 = 2（4,4）、n_C,1 = 1（5）；
     工件加工时间 PT_i = β(i) × pt^unit × θ_s。
     """
-    pytest.skip(NOT_IMPLEMENTED)
+    p = vtoy1_problem
+    # τ=1, k=0 计划量 q = (A12, B8, C5)（金标 '5_预期行为轨迹'）
+    jobs = build_jobs(p, {"A": 12, "B": 8, "C": 5})
+    sizes = {}
+    for job in jobs:
+        sizes.setdefault(job.product, []).append(job.size)
+    assert sizes["A"] == [4, 4, 4], "n_A,1 = ⌈12/4⌉ = 3，批量 4,4,4"
+    assert sizes["B"] == [4, 4], "n_B,1 = 2，批量 4,4"
+    assert sizes["C"] == [5], "n_C,1 = 1，批量 5"
+
+    # PT_i = β(i) × pt^unit × θ_s（抽查各档位）
+    a1 = next(j for j in jobs if j.job_id == "A1")
+    c1 = next(j for j in jobs if j.job_id == "C1")
+    assert processing_time(p, a1, 1, 1) == pytest.approx(4 * 10 * 1.00)
+    assert processing_time(p, a1, 2, 2) == pytest.approx(4 * 15 * 0.90)
+    assert processing_time(p, c1, 2, 1) == pytest.approx(5 * 25 * 1.00)
+    assert processing_time(p, c1, 3, 3) == pytest.approx(5 * 14 * 0.80)
+
+    # V2 变体口径：q_B=14 → 4 子批 (4,4,4,2)，β(i) 自然降序
+    assert split_lots(14, p.lot_size_max["B"]) == [4, 4, 4, 2]
 
 
-def test_a02_sdst_lookup():
+def test_a02_sdst_lookup(vtoy1_problem):
     """A02（4.8.1节/4.3节）：同族相邻 SDST=0；异族按矩阵查表；虚拟工件初始设置 S_0,i=10。"""
-    pytest.skip(NOT_IMPLEMENTED)
+    p = vtoy1_problem
+    # 虚拟工件初始设置 S_0,i = 10（对全部产品族）
+    for prod in p.products:
+        assert p.setup_time(None, prod) == 10
+        assert p.setup_time(prod, prod) == 0, "同族相邻 SDST = 0"
+    # 异族按矩阵查表
+    assert p.setup_time("A", "B") == 20
+    assert p.setup_time("A", "C") == 30
+    assert p.setup_time("B", "A") == 25
+    assert p.setup_time("C", "A") == 25
+    assert p.setup_time("B", "C") == 280, "深度换模机关"
+    assert p.setup_time("C", "B") == 280
+    # 缓冲序 [B,B,A,A,A,C]（'5_预期行为轨迹' τ=1 示例）设置合计 Θ = 65
+    seq = ["B", "B", "A", "A", "A", "C"]
+    total = sum(
+        p.setup_time(prev, nxt) for prev, nxt in zip([None] + seq[:-1], seq)
+    )
+    assert total == 65
 
 
 def test_a03_restart_infeasible_tau1():

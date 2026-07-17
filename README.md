@@ -13,8 +13,12 @@ CLAUDE.md                       # 开发行为规则（先思考、简单优先�
 docs/SYSTEM_DESIGN.md           # 系统框架设计 + 分阶段开发总控
 data/vtoy1.xlsx                 # V-toy-1 金标回归算例（只读，勿改动）
 data/y_template.xlsx            # Y企业数据采集模板（只读）
+src/data/problem_data.py        # ProblemData 数据类（字段注释 = 论文符号）
+src/data/lot_sizing.py          # 子批化映射 q^plan → I^sch（4.8.1 节）
+src/data/validators.py          # 数据完整性校验
+src/data/excel_adapter.py       # V-toy-1 读入器 + Y模板结构读入骨架
 tests/test_vtoy1_workbook.py    # 金标工作簿完整性回归（锁定关键参数与触发机关）
-tests/test_regression_vtoy1.py  # A01~A14 断言（规格占位，随实现逐步点亮）
+tests/test_regression_vtoy1.py  # A01~A14 断言（随实现逐步点亮）
 ```
 
 ## 回归基线运行方式
@@ -28,15 +32,16 @@ pytest -m regression
 **任何阶段结束时本套件必须全绿（无 FAILED）**；金标数据 `data/vtoy1.xlsx`
 的任何意外改动都会使完整性测试变红。
 
-## 当前状态（Stage 0 已完成）
+## 当前状态（Stage 1 已完成）
 
-本仓库从零构建（不存在历史 V-toy 实现），Stage 0 冻结的基线为：
+本仓库从零构建（不存在历史 V-toy 实现），Stage 0 冻结的基线为
 **金标算例数据 + A01~A14 断言规格**（tag: `stage0-foundation`）。
 
-- 金标完整性测试：**10 通过** —— 按单元格坐标锁定 SDST 矩阵（B↔C=280 深度换模
-  机关）、成本参数（b_B=8 最小）、工人可用性（τ=2 缺勤机关）、订单流 o1~o9、
-  滚动与反馈参数等全部关键数值；
-- A01~A14：**14 条 skip 占位** —— 每条的 docstring 即断言规格与论文对应位置，
-  对应机制在 Stage 1~5 实现后逐条替换为真实断言（点亮映射见文件头注释）。
+- Stage 1：L1 数据层完成 —— `ProblemData`（§5 字段规范，注释标注论文符号）、
+  校验器、V-toy-1 金标读入器（读入结果逐项对照金标数值）、子批化映射
+  （4.8.1 节）、SDST 查表、式(3-3) 需求聚合（动态到达）、Y模板结构读入骨架；
+- 回归进度：**A01（子批化）、A02（SDST 查表）已点亮**，A03~A14 为 skip 占位
+  （点亮映射见 tests/test_regression_vtoy1.py 文件头）；
+- 测试合计：33 通过 + 12 占位跳过。
 
-下一阶段：Stage 1 —— ProblemData 与 Excel 适配器（见 docs/SYSTEM_DESIGN.md §6）。
+下一阶段：Stage 2 —— 泛化计划层 MILP（见 docs/SYSTEM_DESIGN.md §6）。
