@@ -23,6 +23,8 @@ src/scheduling/evaluate.py      # 论文口径评价器（式4-1~4-16/5-4 唯一
 src/scheduling/exact_cpsat.py   # CP-SAT 精确调度器（min C_max 判定性验证）
 src/scheduling/meta_vendor.py   # 真实 NSGA-II-VNS-MOSA 适配器（搜索+论文口径重评）
 src/feedback/representative.py  # Pareto 代表解选择（式5-11~5-17）
+src/feedback/cuts.py            # 三步割判据+加班型守卫（式5-6/5-9/5-10）
+src/feedback/protection.py      # 保护处理（式3-9 冲抵口径 + K_max 移出次序）
 vendor_nsga/                    # 论文配套算法源码（只读，见其 README 溯源）
 tests/test_vtoy1_workbook.py    # 金标工作簿完整性回归（锁定关键参数与触发机关）
 tests/test_regression_vtoy1.py  # A01~A14 断言（随实现逐步点亮）
@@ -39,7 +41,7 @@ pytest -m regression
 **任何阶段结束时本套件必须全绿（无 FAILED）**；金标数据 `data/vtoy1.xlsx`
 的任何意外改动都会使完整性测试变红。
 
-## 当前状态（Stage 3 已完成，公式已对照论文核实）
+## 当前状态（Stage 4 已完成）
 
 本仓库从零构建（不存在历史 V-toy 实现），Stage 0 冻结的基线为
 **金标算例数据 + A01~A14 断言规格**（tag: `stage0-foundation`）。
@@ -56,7 +58,12 @@ pytest -m regression
   τ=3 k0 C*=678≥634 且 OT>OT^max ⇒ ρ=0、割后单族 Θ₂=10）；
   `vendor_nsga/` 真实 NSGA-II-VNS-MOSA 原样接入（真算法搜索+论文口径
   重评）；代表解选择（式5-11~5-17，含兜底分支）；
-- 回归进度：**A01~A05、A14 已点亮**（6/14），A06~A13 待 Stage 4/5；
-- 测试合计：65 通过 + 8 占位跳过。
+- Stage 4：反馈层判据与保护处理 —— 三步割生成判据 + §2.2 加班型排除
+  守卫（τ=1 判加班型不生成割 / τ=3 结构型生成割 {B,C}，中间量见
+  `docs/stage4_cut_guard_report.md`）；割池生命周期（式5-10 周期内累积、
+  冻结后清零）；式(3-9) 保护处理（正库存先冲抵欠交，含 P3 错误口径的
+  对照复现测试）；K_max 移出次序（b_p 升序、β 降序，V2 口径）；
+- 回归进度：**A01~A05、A10~A14 已点亮**（10/14），A06~A09 待 Stage 5 闭环；
+- 测试合计：80 通过 + 4 占位跳过。
 
-下一阶段：Stage 4 —— 保护处理（式3-9 口径）+ 割判据加班型排除守卫。
+下一阶段：Stage 5 —— 泛化滚动主循环 + 三通道开关。

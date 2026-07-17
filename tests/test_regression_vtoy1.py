@@ -6,8 +6,8 @@ docs/SYSTEM_DESIGN.md Stage 1~5），断言随各阶段实现逐条点亮：
 
   已点亮：A01, A02（Stage 1：数据层 + 子批化映射 + SDST 查表）
          A03, A04, A05, A14（Stage 3：调度适配器 + 代表解选择）
-  Stage 2+5（计划层/滚动闭环）后可点亮：A06, A07, A08, A09
-  Stage 4（保护处理/割判据守卫）后可点亮：A10, A11, A12, A13
+         A10, A11, A12, A13（Stage 4：三步割判据+守卫、割池、式3-9 保护处理）
+  Stage 5（滚动闭环）后可点亮：A06, A07, A08, A09
 
 运行方式：pytest -m regression
 """
@@ -162,34 +162,115 @@ def test_a09_freeze_four_conditions():
     pytest.skip(NOT_IMPLEMENTED)
 
 
-def test_a10_three_step_cut_criteria_tau3():
+@pytest.fixture(scope="module")
+def cut_decisions(vtoy1_problem):
+    """三步割判据在 τ=1 与 τ=3 的判定（CP-SAT 精确调度器为判据求解器）。"""
+    from src.feedback.cuts import evaluate_cut_criterion
+    from src.scheduling.exact_cpsat import CpSatScheduler
+
+    cpsat = CpSatScheduler(time_limit_s=120)
+    return {
+        1: evaluate_cut_criterion(
+            vtoy1_problem, 1, {"A": 12, "B": 8, "C": 5}, cpsat, seeds=[1, 2, 3]
+        ),
+        3: evaluate_cut_criterion(
+            vtoy1_problem, 3, {"A": 0, "B": 14, "C": 6}, cpsat, seeds=[1, 2, 3]
+        ),
+    }
+
+
+def test_a10_three_step_cut_criteria_tau3(vtoy1_problem, cut_decisions):
     """A10（5.2.1节/式5-6、5-9）：τ=3 三步判据逐步命中：
     ①通过 ②不排除 ③S={B,C}≠∅ → 生成割 Y_B+Y_C≤1（式5-9形式）。
-    注意 §2.2 加班型排除守卫：τ=1（OT≤OT^max）不得生成割。
+    §2.2 加班型排除守卫：τ=1（OT≤OT^max）不得生成割。
     """
-    pytest.skip(NOT_IMPLEMENTED)
+    # τ=1：①通过（全部重启 ρ<0.8）但 OT=29≤120 → 加班型排除，不生成割
+    d1 = cut_decisions[1]
+    assert all(r["fallback"] for r in d1.diagnostics["restarts"]), "① 3 次重启均 Feas=0"
+    assert d1.diagnostics["stage_loads"][2] == pytest.approx(465)
+    assert not d1.generated and d1.reason == "overtime_type"
+    assert d1.diagnostics["best_ot"] <= vtoy1_problem.ot_max
+
+    # τ=3：①通过 ②负荷 430≤480 不排除 ②′ OT=198>120 → ③ S={B,C} → 生成割
+    d3 = cut_decisions[3]
+    assert all(r["fallback"] for r in d3.diagnostics["restarts"]), "① 3 次重启均 Feas=0"
+    assert d3.diagnostics["stage_loads"][2] == pytest.approx(430)
+    assert d3.diagnostics["stage_loads"][2] <= 480, "② 负荷排除不触发"
+    assert d3.diagnostics["best_ot"] > vtoy1_problem.ot_max, "②′ 加班上限内不可消化"
+    assert d3.diagnostics["removal_tests"]["B"]["acceptable"], "③ 移B→仅C可行"
+    assert d3.diagnostics["removal_tests"]["C"]["acceptable"], "③ 移C→仅B可行"
+    assert d3.generated and d3.reason == "structural"
+    assert d3.combo == frozenset({"B", "C"}), "割 C={B,C}（式5-9：Y_B+Y_C≤1）"
 
 
-def test_a11_cut_scope_and_resolution():
+def test_a11_cut_scope_and_resolution(vtoy1_problem, cut_decisions):
     """A11（式3-12/5-9）：割仅作用于 t=τ=3；重解后 Y_B,3+Y_C,3≤1 成立；
     预计移 C（延期惩罚 6×12=72 < 14×8=112）。
     """
-    pytest.skip(NOT_IMPLEMENTED)
+    from src.planning.milp_model import PlanningInputs, solve_planning
+
+    combo = cut_decisions[3].combo
+    sol = solve_planning(
+        vtoy1_problem,
+        PlanningInputs(
+            window=(3, 4), demand=vtoy1_problem.demand_at(3), cuts=((combo, 3),)
+        ),
+    )
+    assert sol.y["B"][3] + sol.y["C"][3] <= 1, "重解后割约束成立"
+    assert (sol.q["A"][3], sol.q["B"][3], sol.q["C"][3]) == (0, 14, 0), "保B移C"
+    assert sol.back["C"][3] == pytest.approx(6)
+    assert sol.cost_breakdown["backlog"] == pytest.approx(72), "72 < 112"
+    assert sol.q["C"][4] == 6, "割仅作用于 t=3，t=4 的 C 不受限"
 
 
-def test_a12_cut_set_lifecycle():
+def test_a12_cut_set_lifecycle(cut_decisions):
     """A12（式5-10 与清零机制）：ℋ_3^inf 在 τ=3 冻结后清空，ℋ_4^inf,(0)=∅；
     周期内 Δℋ 按式(5-10)累积。
     """
-    pytest.skip(NOT_IMPLEMENTED)
+    from src.feedback.cuts import InfeasibleCutPool
+
+    pool = InfeasibleCutPool()
+    # τ=3 反馈迭代内：Δℋ 并入（式5-10），重复并入不重复计数
+    pool.accumulate({cut_decisions[3].combo})
+    pool.accumulate({cut_decisions[3].combo})
+    assert len(pool) == 1
+    assert pool.cuts_for(3) == ((frozenset({"B", "C"}), 3),)
+    # τ=3 冻结后清空 → ℋ_4^inf,(0) = ∅
+    pool.clear_after_freeze()
+    assert len(pool) == 0
+    assert pool.cuts_for(4) == ()
 
 
-def test_a13_state_chain_and_terminal():
+def test_a13_state_chain_and_terminal(vtoy1_problem):
     """A13（式3-9/3-27~3-30）：状态链：Back_B,1 经式(3-9)进入 τ=2 平衡并清偿；
     Back_C,3 在 τ=4 清偿；T_max 末全部 Back=0、库存≥0、O^unfin=∅。
     保护处理口径：欠交累计前必须先用正库存冲抵（式3-9），禁止直接累加。
+
+    按金标 '5_预期行为轨迹' 冻结的逐周期 q 走状态链（闭环端到端复验在
+    Stage 5 滚动控制器中进行）；主线 V1 保护处理不触发 → O^unfin 恒为 ∅。
     """
-    pytest.skip(NOT_IMPLEMENTED)
+    from src.feedback.protection import update_state
+
+    p = vtoy1_problem
+    frozen_q = {1: {"A": 12, "B": 5, "C": 5}, 2: {"A": 6, "B": 9, "C": 4},
+                3: {"A": 0, "B": 14, "C": 0}, 4: {"A": 8, "B": 0, "C": 6}}
+    inv = dict(p.init_inventory)
+    back = {prod: 0.0 for prod in p.products}
+    trace = {}
+    for tau in p.periods:
+        demand_tau = {prod: p.demand_at(tau)[prod][tau] for prod in p.products}
+        inv, back = update_state(p, inv, back, frozen_q[tau], demand_tau)
+        trace[tau] = (dict(inv), dict(back))
+        for prod in p.products:
+            assert min(inv[prod], back[prod]) == 0, "式(3-9) 冲抵性质"
+
+    assert trace[1][1]["B"] == pytest.approx(3), "Back_B,1 = 3"
+    assert trace[2][1]["B"] == pytest.approx(0), "Back_B 经 τ=2 平衡清偿"
+    assert trace[3][1]["C"] == pytest.approx(6), "Back_C,3 = 6"
+    assert trace[4][1]["C"] == pytest.approx(0), "Back_C 在 τ=4 清偿"
+    for prod in p.products:  # T_max 末全链路清算
+        assert trace[4][1][prod] == pytest.approx(0), "全部 Back=0"
+        assert trace[4][0][prod] >= 0, "库存 ≥ 0"
 
 
 def test_a14_representative_selection(vtoy1_problem):
