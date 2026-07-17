@@ -1,33 +1,41 @@
-"""泛化计划层 MILP（论文第 3 章滚动时域计划模型，完全由 ProblemData 驱动）。
+"""泛化计划层 MILP（论文式(3-4)~(3-14)，完全由 ProblemData 驱动）。
 
-模型结构（docs/SYSTEM_DESIGN.md §2.1 / §6 Stage 2）：
-  决策变量：q_{p,t}^plan ≥0 整数（生产量）、Y_{p,t}^plan ∈{0,1}（在产/设置
-            状态指示）、U_{p,t}（启动，启动逻辑约束下自动取 max{0, Y_t−Y_{t−1}}）、
-            Inv、Back ≥0（库存/欠交）、OT_{j,t} ∈[0, OT^max]（加班）。
-  约束：    需求平衡；产能（名义 Cap^nom 或通道2反馈的 Cap^eff + 加班）；
-            启动逻辑 q ≤ M·Y、U ≥ Y_t − Y_{t−1}；
-            通道3不可行组合割 Σ_{p∈C} Y_{p,t_C} ≤ |C|−1（式5-9 形式，
-            仅作用于割生成周期，A11 口径）；
-            期末闭合：窗口含 T_max 时 Back_{p,T_max}=0（A13"T_max 末全部
-            Back=0"口径；真不可行由保护处理移出订单解除，Stage 4）。
-  目标：    min Σ h_p·Inv + b_p·Back + g_p·U + κ_C·OT + Σ Δc_{p,t}·q
-            （末项为通道1成本修正的调度风险惩罚项）。
+与论文的对应（已对照论文正文核实）：
+  决策变量（表3-3）：q_{p,t}^plan ≥0 整数、Y_{p,t}^plan ∈{0,1}（是否安排
+            生产）、Inv、Back ≥0；计划层【无加班变量】（加班属于调度层，
+            OT=max{0,C_max−T^avail}，式5-4）。另引入辅助变量 U_{p,t}（启动，
+            见下方口径偏差 2）。
+  约束：    需求平衡式(3-9)；生产状态联结 q ≤ R·Y 式(3-10)；有效产能反馈
+            约束式(3-11)（硬约束，Cap^eff 覆盖名义产能，通道2）；
+            不可行组合割式(3-12) Σ_{p∈C} Y_{p,t_C} ≤ |C|−1（仅作用于割
+            生成周期 τ，通道3）；变量域式(3-14)；
+            期末闭合：窗口含 T_max 时 Back_{p,T_max}=0（见口径偏差 3）。
+  目标：    式(3-4)~(3-8) 为 min Σ(c_p+Δc_{p,t})q + Σh·Inv + Σb·Back
+            + Σg_p·Y_{p,t}；本实现为 min Σh·Inv + Σb·Back + Σg_p·U
+            + ΣΔc_{p,t}·q（通道1成本修正项，式3-5 的反馈部分）。
 
-口径说明（由金标 V-toy-1 预期轨迹反推确定，与论文式(3-x) 的最终核对留待
-论文作者确认；各条推导互为交叉验证）：
-  1) g_p 按"启动"计费（U 变量）且窗口起点冷启动（y_prev 缺省 0，不跨窗口
-     继承在产状态）。反证：
-     - 若按在产周期计费：τ=2 的 C4 会并批推迟至 t=3（省一次 g_C > 欠交罚），
-       连锁导致 τ=3 变为"移B"，违反 A11"预计移C(72<112)"；且 τ=1"移3B(24)
-       与移2C(24)二者接近"不再成立（移C需额外整期设置费）；
-     - 若跨窗口继承在产状态：τ=3 计划层可用 1 件 A 的"保运行"生产免费保持
-       A 在产，A 成为缓冲产品使 {B,C} 结构冲突消失，A10 割判据不再触发；
-     - 窗口冷启动下 τ=3 割后比较中三个产品的启动费在两方案中完全对称抵消，
-       决策差恰为纯欠交罚 72 vs 112，与金标算式逐字一致。
-  2) 目标不含 c_p·q 项：滚动窗口内该项会使"推迟生产省成本"成为伪最优，
-     与金标 τ=1 k=0 输出 q=(12,8,5) 矛盾；c_p 仅用于 Δc 上界（δ^max·c_p，
-     反馈层）与成本报告；
-  3) 期末闭合约束见上；不含 T_max 的窗口欠交为软约束（逐期计罚）。
+与论文正文的三处刻意偏差（金标 V-toy-1 硬断言强制，"先验证后回写"口径；
+每条均有反证与测试锁定）：
+  1) 省略 c_p·q 常数项：论文无显式"需求最终必须满足"约束，字面模型下
+     "整窗不生产"（欠交罚 12×10×3=360 < 生产 700）成为伪最优，直接违反
+     金标 τ=1 k=0 输出 q=(12,8,5) 与 A13；在"需求终须满足"的解空间内
+     Σc_p·q 为常数，省略不改变最优解，且规避该病态。
+  2) g_p 按"启动"计费（U ≥ Y_t − Y_{t−1}，窗口起点冷启动 y_prev=0）而非
+     式(3-8) 字面的逐期计费。反证（逐期计费下金标至少三处被破坏）：
+     - τ=2 的 C4 将并批推迟至 t=3（省一次 g_C=150 > 欠交罚 48），τ=3 时
+       C 需求变为 10 件 → 负荷 530>480，割判据②负荷排除被触发，A10 的
+       "②不排除"路径不再成立；
+     - 且移C欠交罚变为 120>112 → 改移B，违反 A11"预计移C(72<112)"；
+     - τ=1 k=1"移3B(24)与移2C(24)二者接近"不成立（移C 需加整期 g_C=150）。
+     窗口冷启动下 τ=3 割后两方案启动费完全对称抵消，决策差恰为纯欠交罚
+     72 vs 112，与金标算式逐字一致；跨窗口继承在产状态同样被否证
+     （1 件 A"保运行"即可充当缓冲产品使 {B,C} 冲突消失，A10 失效）。
+  3) 期末闭合 Back_{p,T_max}=0：与偏差 1 同源（论文缺需求满足锚点），
+     对应 A13"T_max 末全部 Back=0"；真不可行由保护处理移出订单解除
+     （算法5-1 第23~32行，Stage 4）。不含 T_max 的窗口欠交仍为软约束。
+回写建议（供论文作者定夺，不改正文是实现无法两全）：§3.3 目标函数处
+补启动变量定义或说明 g_p 按连续生产段计费；§3.4 或 §3.5 补"计划期末
+需求必须满足"条款。
 """
 from __future__ import annotations
 
@@ -61,9 +69,8 @@ class PlanningSolution:
     startup: dict[str, dict[int, int]]  # U_{p,t}（启动）
     inv: dict[str, dict[int, float]]    # Inv_{p,t}
     back: dict[str, dict[int, float]]   # Back_{p,t}
-    ot: dict[int, dict[int, float]]     # OT_{j,t}
     objective: float
-    cost_breakdown: dict[str, float]    # holding/backlog/startup/overtime/risk
+    cost_breakdown: dict[str, float]    # holding/backlog/startup/risk
     status: str
 
 
@@ -76,11 +83,11 @@ def _new_solver() -> pywraplp.Solver:
 
 
 def _q_upper_bound(problem: ProblemData, inputs: PlanningInputs, p: str, t: int) -> int:
-    """q_{p,t} 的产能型上界（启动逻辑大 M）：各阶段 (产能+加班上限)/单位占用 取最小。"""
+    """R_{p,t}（式3-10 的允许范围上界）：各阶段 产能/单位占用 取最小。"""
     bounds = []
     for j in problem.stages:
         cap = max(problem.capacity[j][t], inputs.cap_eff.get((j, t), 0.0))
-        bounds.append((cap + problem.ot_max) / problem.proc_time[p][j])
+        bounds.append(cap / problem.proc_time[p][j])
     return int(min(bounds))
 
 
@@ -100,11 +107,6 @@ def solve_planning(problem: ProblemData, inputs: PlanningInputs) -> PlanningSolu
             u[p, t] = solver.NumVar(0, 1, f"U_{p}_{t}")
             inv[p, t] = solver.NumVar(0, solver.infinity(), f"Inv_{p}_{t}")
             back[p, t] = solver.NumVar(0, solver.infinity(), f"Back_{p}_{t}")
-    ot = {
-        (j, t): solver.NumVar(0, problem.ot_max, f"OT_{j}_{t}")
-        for j in problem.stages
-        for t in window
-    }
 
     # ── 需求平衡：Inv_t − Back_t = Inv_{t−1} − Back_{t−1} + q_t − D_t ──
     for p in products:
@@ -117,13 +119,12 @@ def solve_planning(problem: ProblemData, inputs: PlanningInputs) -> PlanningSolu
             d = demand.get(p, {}).get(t, 0)
             solver.Add(inv[p, t] - back[p, t] == prev + q[p, t] - d)
 
-    # ── 产能（通道2 Cap^eff 覆盖名义产能）+ 加班 ──
+    # ── 有效产能反馈约束 式(3-11)：硬约束，Cap^eff 覆盖名义产能（通道2）──
     for j in problem.stages:
         for t in window:
             cap = inputs.cap_eff.get((j, t), problem.capacity[j][t])
             solver.Add(
-                solver.Sum(problem.proc_time[p][j] * q[p, t] for p in products)
-                <= cap + ot[j, t]
+                solver.Sum(problem.proc_time[p][j] * q[p, t] for p in products) <= cap
             )
 
     # ── 启动逻辑：q ≤ M·Y；U ≥ Y_t − Y_{t−1} ──
@@ -147,11 +148,10 @@ def solve_planning(problem: ProblemData, inputs: PlanningInputs) -> PlanningSolu
     holding = solver.Sum(problem.cost_inv[p] * inv[p, t] for p in products for t in window)
     backlog = solver.Sum(problem.cost_back[p] * back[p, t] for p in products for t in window)
     startup = solver.Sum(problem.cost_setup[p] * u[p, t] for p in products for t in window)
-    overtime = solver.Sum(problem.kappa_c * ot[j, t] for j in problem.stages for t in window)
     risk = solver.Sum(
         inputs.delta_c.get((p, t), 0.0) * q[p, t] for p in products for t in window
     )
-    solver.Minimize(holding + backlog + startup + overtime + risk)
+    solver.Minimize(holding + backlog + startup + risk)
 
     status = solver.Solve()
     if status not in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE):
@@ -166,7 +166,6 @@ def solve_planning(problem: ProblemData, inputs: PlanningInputs) -> PlanningSolu
         startup={p: {t: round(_val(u[p, t])) for t in window} for p in products},
         inv={p: {t: _val(inv[p, t]) for t in window} for p in products},
         back={p: {t: _val(back[p, t]) for t in window} for p in products},
-        ot={j: {t: _val(ot[j, t]) for t in window} for j in problem.stages},
         objective=solver.Objective().Value(),
         cost_breakdown={
             "holding": sum(
@@ -177,9 +176,6 @@ def solve_planning(problem: ProblemData, inputs: PlanningInputs) -> PlanningSolu
             ),
             "startup": sum(
                 problem.cost_setup[p] * _val(u[p, t]) for p in products for t in window
-            ),
-            "overtime": sum(
-                problem.kappa_c * _val(ot[j, t]) for j in problem.stages for t in window
             ),
             "risk": sum(
                 inputs.delta_c.get((p, t), 0.0) * _val(q[p, t])
@@ -225,10 +221,8 @@ def verify_solution(
         for t in window:
             load = sum(problem.proc_time[p][j] * sol.q[p][t] for p in problem.products)
             cap = inputs.cap_eff.get((j, t), problem.capacity[j][t])
-            if load > cap + sol.ot[j][t] + tol:
-                violations.append(f"产能违反 j={j} t={t} 负荷={load} > {cap}+OT")
-            if sol.ot[j][t] > problem.ot_max + tol:
-                violations.append(f"加班超上限 j={j} t={t}")
+            if load > cap + tol:
+                violations.append(f"产能违反 j={j} t={t} 负荷={load} > {cap}")
 
     for combo, t_cut in inputs.cuts:
         if t_cut in window:

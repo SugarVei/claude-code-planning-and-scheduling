@@ -5,7 +5,7 @@ docstring 即断言规格与论文对应位置）。本仓库从零构建（见
 docs/SYSTEM_DESIGN.md Stage 1~5），断言随各阶段实现逐条点亮：
 
   已点亮：A01, A02（Stage 1：数据层 + 子批化映射 + SDST 查表）
-  Stage 3（调度适配器）后可点亮：A03, A04, A05, A14
+         A03, A04, A05, A14（Stage 3：调度适配器 + 代表解选择）
   Stage 2+5（计划层/滚动闭环）后可点亮：A06, A07, A08, A09
   Stage 4（保护处理/割判据守卫）后可点亮：A10, A11, A12, A13
 
@@ -14,10 +14,23 @@ docs/SYSTEM_DESIGN.md Stage 1~5），断言随各阶段实现逐条点亮：
 import pytest
 
 from src.data.lot_sizing import build_jobs, processing_time, split_lots
+from src.feedback.representative import select_representative
+from src.scheduling.evaluate import evaluate_schedule
+from src.scheduling.meta_vendor import VendorNsgaScheduler
 
 pytestmark = pytest.mark.regression
 
 NOT_IMPLEMENTED = "V-toy 闭环尚未实现（从零构建，Stage 1+ 逐步点亮）——本测试为断言规格占位"
+
+
+@pytest.fixture(scope="module")
+def tau1_k0_fronts(vtoy1_problem):
+    """τ=1 k=0（q=12,8,5）三个不同随机种子的 vendor 求解结果（A03 判据①口径）。"""
+    jobs = build_jobs(vtoy1_problem, {"A": 12, "B": 8, "C": 5})
+    meta = VendorNsgaScheduler()
+    return {
+        seed: meta.solve(vtoy1_problem, jobs, tau=1, seed=seed) for seed in (1, 2, 3)
+    }
 
 
 def test_a01_lot_sizing(vtoy1_problem):
@@ -70,21 +83,55 @@ def test_a02_sdst_lookup(vtoy1_problem):
     assert total == 65
 
 
-def test_a03_restart_infeasible_tau1():
-    """A03（5.2.1 判据①）：τ=1,k=0 时 3 次不同随机种子重启均 Feas=0。"""
-    pytest.skip(NOT_IMPLEMENTED)
+def test_a03_restart_infeasible_tau1(vtoy1_problem, tau1_k0_fronts):
+    """A03（5.2.1 判据①）：τ=1,k=0 时 3 次不同随机种子重启均 Feas=0。
+
+    结构性根源：CP-SAT 已证明该工件集合精确最优 C_max*=509 > 504
+    （tests/test_scheduling_cpsat.py），故任何重启都不可能 ρ ≥ 0.8。
+    """
+    for seed, front in tau1_k0_fronts.items():
+        assert front, f"seed={seed} 解集非空"
+        rep = select_representative(vtoy1_problem, front)
+        assert rep.solution.rho < vtoy1_problem.rho_min, f"seed={seed} 应 Feas=0"
+        assert rep.is_fallback, "Ω^acc=∅ → 兜底代表解"
 
 
-def test_a04_rho_formula():
-    """A04（式5-15）：ρ 输出与手算一致：ρ = 1 − min{1, max{0, C_max−480}/120}。"""
-    pytest.skip(NOT_IMPLEMENTED)
+def test_a04_rho_formula(vtoy1_problem, tau1_k0_fronts):
+    """A04（式5-15，工作簿编号）：ρ 输出与手算一致：
+    ρ = 1 − min{1, max{0, C_max−480}/120}。"""
+    for front in tau1_k0_fronts.values():
+        for s in front:
+            expected = 1 - min(1.0, max(0.0, s.cmax - 480) / 120)
+            assert s.rho == pytest.approx(expected)
 
 
-def test_a05_ot_and_setup_sum():
+def test_a05_ot_and_setup_sum(vtoy1_problem, tau1_k0_fronts):
     """A05（式5-4/4.8.2节）：OT = max{0, C_max−480}；
     Θ_2^sdst 等于代表解甘特图上 M21 各设置段之和（若为缓冲序则 =65）。
     """
-    pytest.skip(NOT_IMPLEMENTED)
+    # OT 定义 + Θ_2 与甘特图逐段一致（对全部解）
+    for front in tau1_k0_fronts.values():
+        for s in front:
+            assert s.ot == pytest.approx(max(0.0, s.cmax - 480))
+            m21_setups = sum(
+                op.setup_time
+                for op in s.operations
+                if op.stage == 2 and op.machine == "M21"
+            )
+            assert s.theta_stage[2] == pytest.approx(m21_setups)
+    # 缓冲序锚点：M21 队列 [B,B,A,A,A,C] → Θ_2 = 10+25+30 = 65
+    jobs = build_jobs(vtoy1_problem, {"A": 12, "B": 8, "C": 5})
+    order = ["B1", "B2", "A1", "A2", "A3", "C1"]
+    assignment = {}
+    for j in jobs:
+        assignment[(j.job_id, 1)] = ("M11", 1, 1)
+        assignment[(j.job_id, 2)] = ("M21", 1, 2)
+        assignment[(j.job_id, 3)] = ("M31", 1, 1)
+    sol = evaluate_schedule(
+        vtoy1_problem, jobs, 1, assignment,
+        {(1, "M11"): order, (2, "M21"): order, (3, "M31"): order},
+    )
+    assert sol.theta_stage[2] == pytest.approx(65)
 
 
 def test_a06_cost_correction_channel():
@@ -145,8 +192,25 @@ def test_a13_state_chain_and_terminal():
     pytest.skip(NOT_IMPLEMENTED)
 
 
-def test_a14_representative_selection():
-    """A14（式5-16~5-18）：代表解选择：Ω^acc 非空时取 s(π) 最小；
-    τ=3,k=0 时 Ω^acc=∅ → 走式(5-18)违约字典序兜底，兜底解仅用于反馈折算不被冻结。
+def test_a14_representative_selection(vtoy1_problem):
+    """A14（式5-16~5-18，工作簿编号）：代表解选择：Ω^acc 非空时取 s(π) 最小；
+    τ=3,k=0 时 Ω^acc=∅ → 走违约字典序兜底，兜底解仅用于反馈折算不被冻结。
     """
-    pytest.skip(NOT_IMPLEMENTED)
+    # τ=3, k=0：q=(0,14,6) → {B,C} 深度换模冲突，全部解 C_max ≥ 634 > 480
+    jobs = build_jobs(vtoy1_problem, {"A": 0, "B": 14, "C": 6})
+    front = VendorNsgaScheduler().solve(vtoy1_problem, jobs, tau=3, seed=7)
+    assert front
+    for s in front:
+        assert s.cmax > vtoy1_problem.t_avail, "结构冲突下无可接受解"
+    rep = select_representative(vtoy1_problem, front)
+    assert rep.is_fallback, "Ω^acc=∅ → 违约字典序兜底（仅用于反馈折算，不冻结）"
+    # 兜底字典序首键 = ρ 违约量最小 ⇔ ρ 最大
+    assert rep.solution.rho == pytest.approx(max(s.rho for s in front))
+
+    # Ω^acc 非空分支：τ=3 割后 q=(0,14,0) 单族 → 存在可接受解 → 取 s(π) 最小（非兜底）
+    jobs_cut = build_jobs(vtoy1_problem, {"A": 0, "B": 14, "C": 0})
+    front_cut = VendorNsgaScheduler().solve(vtoy1_problem, jobs_cut, tau=3, seed=7)
+    rep_cut = select_representative(vtoy1_problem, front_cut)
+    assert not rep_cut.is_fallback
+    assert rep_cut.solution.rho >= vtoy1_problem.rho_min
+    assert rep_cut.solution.cmax <= vtoy1_problem.t_avail

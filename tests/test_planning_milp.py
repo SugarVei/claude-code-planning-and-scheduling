@@ -31,15 +31,13 @@ class TestVtoyTau1:
         for t in inputs.window:
             for prod in p.products:
                 assert sol.back[prod][t] == pytest.approx(0)
-            for j in p.stages:
-                assert sol.ot[j][t] == pytest.approx(0)
         # 窗口内全部已知需求足量生产（C 共 5+6=11，含 t=3 交付的 o6）
         assert sum(sol.q["C"].values()) == 11
         assert verify_solution(p, inputs, sol) == []
 
     def test_k1_effective_capacity_415(self, vtoy1_problem):
         """k=1：通道2 反馈 Cap_2^eff=415 → 移 3B 或移 2C（欠交罚均 24，
-        金标"二者接近，以求解器为准"），t=2 清偿，不用加班。"""
+        金标"二者接近，以求解器为准"），t=2 清偿。"""
         p = vtoy1_problem
         inputs = PlanningInputs(
             window=(1, 2, 3), demand=p.demand_at(1), cap_eff={(2, 1): 415.0}
@@ -53,7 +51,6 @@ class TestVtoyTau1:
         for prod in p.products:  # t=2 起全部清偿
             assert sol.back[prod][2] == pytest.approx(0)
             assert sol.back[prod][3] == pytest.approx(0)
-        assert sol.ot[2][1] == pytest.approx(0), "移出比加班便宜（24 < κ_C·OT）"
         assert verify_solution(p, inputs, sol) == []
 
 
@@ -61,16 +58,13 @@ class TestVtoyTau3:
     """τ=3：窗口 R_3={3,4}，需求 B14(o9)/C6(o6)@t3、A8(o8)@t4；窗口含 T_max。"""
 
     def test_k0_no_cut(self, vtoy1_problem):
-        """k=0：无割 → q_3=(0,14,6) 负荷 430≤480，A8 留在 t=4，无加班。"""
+        """k=0：无割 → q_3=(0,14,6) 负荷 430≤480，A8 留在 t=4。"""
         p = vtoy1_problem
         inputs = PlanningInputs(window=(3, 4), demand=p.demand_at(3))
         sol = solve_planning(p, inputs)
         assert (sol.q["A"][3], sol.q["B"][3], sol.q["C"][3]) == (0, 14, 6)
         assert (sol.q["A"][4], sol.q["B"][4], sol.q["C"][4]) == (8, 0, 0)
         assert _stage2_load(p, sol, 3) == 430
-        for j in p.stages:
-            for t in (3, 4):
-                assert sol.ot[j][t] == pytest.approx(0)
         assert sol.cost_breakdown["backlog"] == pytest.approx(0)
         assert verify_solution(p, inputs, sol) == []
 
@@ -127,7 +121,7 @@ class TestFeedbackChannels:
         assert sol.cost_breakdown["risk"] == pytest.approx(0)
 
     def test_objective_excludes_production_cost(self, vtoy1_problem):
-        """目标 = 库存+欠交+启动+加班+风险（口径说明2：不含 c_p·q 项）。"""
+        """目标 = 库存+欠交+启动+风险（口径偏差1：不含 c_p·q 项；表3-3：无加班变量）。"""
         p = vtoy1_problem
         sol = solve_planning(
             p, PlanningInputs(window=(1, 2, 3), demand=p.demand_at(1))
