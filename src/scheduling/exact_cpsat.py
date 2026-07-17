@@ -123,6 +123,8 @@ class CpSatScheduler:
         for j in stages:
             for f in problem.machines[j]:
                 arcs = []
+                # 虚拟节点 0 的自环：机器无工件时圈退化为 0→0（否则每机被迫用工）
+                arcs.append((0, 0, m.NewBoolVar(f"empty_{j}_{f}")))
                 for i in range(n):
                     lit_start = m.NewBoolVar(f"arc0_{i}_{j}_{f}")
                     arcs.append((0, i + 1, lit_start))
@@ -149,6 +151,9 @@ class CpSatScheduler:
 
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = self.time_limit_s
+        # 单线程：多 worker 下返回的最优解不确定（目标值同、解不同），
+        # 会使闭环反馈链（代表解 Θ_j → Cap^eff → 计划）不可复现
+        solver.parameters.num_search_workers = 1
         if seed is not None:
             solver.parameters.random_seed = seed
         status = solver.Solve(m)

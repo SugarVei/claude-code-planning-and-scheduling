@@ -4,10 +4,11 @@
 docstring 即断言规格与论文对应位置）。本仓库从零构建（见
 docs/SYSTEM_DESIGN.md Stage 1~5），断言随各阶段实现逐条点亮：
 
-  已点亮：A01, A02（Stage 1：数据层 + 子批化映射 + SDST 查表）
-         A03, A04, A05, A14（Stage 3：调度适配器 + 代表解选择）
-         A10, A11, A12, A13（Stage 4：三步割判据+守卫、割池、式3-9 保护处理）
-  Stage 5（滚动闭环）后可点亮：A06, A07, A08, A09
+  A01~A14 已全部点亮：
+    A01, A02（Stage 1：数据层 + 子批化映射 + SDST 查表）
+    A03, A04, A05, A14（Stage 3：调度适配器 + 代表解选择）
+    A10, A11, A12, A13（Stage 4：三步割判据+守卫、割池、式3-9 保护处理）
+    A06, A07, A08, A09（Stage 5：滚动闭环 + 三通道反馈）
 
 运行方式：pytest -m regression
 """
@@ -19,8 +20,6 @@ from src.scheduling.evaluate import evaluate_schedule
 from src.scheduling.meta_vendor import VendorNsgaScheduler
 
 pytestmark = pytest.mark.regression
-
-NOT_IMPLEMENTED = "V-toy 闭环尚未实现（从零构建，Stage 1+ 逐步点亮）——本测试为断言规格占位"
 
 
 @pytest.fixture(scope="module")
@@ -134,32 +133,96 @@ def test_a05_ot_and_setup_sum(vtoy1_problem, tau1_k0_fronts):
     assert sol.theta_stage[2] == pytest.approx(65)
 
 
-def test_a06_cost_correction_channel():
+@pytest.fixture(scope="module")
+def closed_loop(vtoy1_problem):
+    """全开配置闭环（CP-SAT 确定性调度器，base_seed=0）。"""
+    from src.rolling.controller import run_rolling
+    from src.scheduling.exact_cpsat import CpSatScheduler
+
+    return run_rolling(vtoy1_problem, CpSatScheduler(time_limit_s=120), base_seed=0)
+
+
+def test_a06_cost_correction_channel(vtoy1_problem, closed_loop):
     """A06（式5-1~5-3 及增量/阻尼段）：Δc^(1) 量纲为元/件；Σ_p χ_p=1；
     k=0 基线下 κ_L、κ_E 增量项 =0；Δc^(1) = (1−γ)·0 + γ·Δĉ 且 ≤ δ^max·c_p。
     """
-    pytest.skip(NOT_IMPLEMENTED)
+    p = vtoy1_problem
+    ch = closed_loop.period(1).iterations[0].channels  # τ=1, k=0 → Δc^(1)
+    assert sum(ch.chi.values()) == pytest.approx(1.0), "Σ_p χ_p = 1"
+    assert ch.lc_inc == 0 and ch.e_inc == 0, "k=0 为增量基线，κ_L/κ_E 项 = 0"
+    sched = closed_loop.period(1).iterations[0].schedule
+    assert ch.pooled_cost == pytest.approx(
+        p.kappa_c * sched.ot + p.kappa_s * sched.theta_total
+    ), "k=0 下聚合代价仅含 κ_C·OT + κ_S·Θ 项"
+    for prod in p.products:
+        # Δĉ_p = χ_p/(q_p+ε)·pooled（元/件量纲）；Δc^(1) = (1−γ)·0 + γ·Δĉ
+        q = closed_loop.period(1).iterations[0].q_tau[prod]
+        assert ch.delta_c_hat[prod] == pytest.approx(
+            ch.chi[prod] / (q + 1e-9) * ch.pooled_cost
+        )
+        assert ch.delta_c_next[prod] == pytest.approx(
+            min(p.gamma * ch.delta_c_hat[prod], p.delta_max * p.cost_prod[prod])
+        )
+        assert ch.delta_c_next[prod] <= p.delta_max * p.cost_prod[prod] + 1e-9
 
 
-def test_a07_effective_capacity_channel():
+def test_a07_effective_capacity_channel(vtoy1_problem, closed_loop):
     """A07（式5-5 与 η 定义式）：Cap_2^eff,(1) = max{0, 480×η − Θ_2}；
-    τ=1 时 η=1、τ=2 时 η=0.8。
+    τ=1 时 η=1、τ=2 时 η=0.8；无论该周期是否 k=0 冻结，反馈计算必须给出。
     """
-    pytest.skip(NOT_IMPLEMENTED)
+    it1 = closed_loop.period(1).iterations[0]
+    assert it1.channels.eta == pytest.approx(1.0), "τ=1：工人5=机器5 → η=1"
+    assert it1.channels.cap_eff_next[2] == pytest.approx(
+        max(0.0, 480 * 1.0 - it1.schedule.theta_stage[2])
+    )
+    # τ=2 在 k=0 直接冻结，但反馈计算仍须记录（金标"第19行反馈计算"口径）
+    pr2 = closed_loop.period(2)
+    assert pr2.k_star == 0, "τ=2 走 k=0 冻结分支"
+    it2 = pr2.iterations[0]
+    assert it2.channels.eta == pytest.approx(0.8), "α=3 缺勤 → η=4/5=0.8"
+    assert it2.channels.cap_eff_next[2] == pytest.approx(
+        max(0.0, 480 * 0.8 - it2.schedule.theta_stage[2])
+    )
 
 
-def test_a08_plan_respects_feedback():
-    """A08（3.2.1节下标约定/5.2.2节）：τ=1,k=1 计划层解满足阶段2负荷 ≤415；
-    t>τ 各周期 Δc 与 Cap^eff 沿用上轮值。
+def test_a08_plan_respects_feedback(vtoy1_problem, closed_loop):
+    """A08（3.2.1节下标约定/5.2.2节）：τ=1,k=1 计划层解满足阶段2负荷
+    ≤ Cap_2^eff,(1)（金标以 Θ_2=65 例示为 415，本代表解 Θ_2=55 → 425）；
+    t>τ 各周期 Δc 与 Cap^eff 沿用上轮值（首轮为零/名义 → 仅 t=τ 项被更新）。
     """
-    pytest.skip(NOT_IMPLEMENTED)
+    p = vtoy1_problem
+    pr = closed_loop.period(1)
+    it0, it1 = pr.iterations[0], pr.iterations[1]
+    cap_2_1 = it0.channels.cap_eff_next[2]
+    # k=1 计划层输入：仅 t=τ=1 的 Δc/Cap^eff 被更新，t>τ 沿用上轮（无覆盖）
+    assert set(it1.plan_inputs.delta_c) == {(prod, 1) for prod in p.products}
+    assert set(it1.plan_inputs.cap_eff) == {(j, 1) for j in p.stages}
+    assert it1.plan_inputs.cap_eff[(2, 1)] == pytest.approx(cap_2_1)
+    # 阶段2负荷 ≤ Cap_2^eff,(1)
+    load = sum(p.proc_time[prod][2] * it1.q_tau[prod] for prod in p.products)
+    assert load <= cap_2_1 + 1e-9
+    assert load == pytest.approx(465 - 2 * 20), "移出 2B（Θ_2=55 口径，以求解器为准）"
 
 
-def test_a09_freeze_four_conditions():
+def test_a09_freeze_four_conditions(vtoy1_problem, closed_loop):
     """A09（3.5.4节/算法5-1第20行）：冻结判定同时核查四条件
     （Feas=1、C_max≤T^avail、Δℋ=∅、稳定性；k=0 时稳定性默认满足）。
     """
-    pytest.skip(NOT_IMPLEMENTED)
+    for pr in closed_loop.periods:
+        final = pr.iterations[-1].freeze
+        assert final.frozen
+        assert final.feas_ok and final.cmax_ok and final.no_new_cuts, "必要条件(3-19)(3-20)与(3-21)"
+        if not final.kmax_forced:
+            assert final.stable, "稳定性(3-22)"
+    # k=0 冻结分支：稳定性默认满足（τ=2、τ=4）
+    for tau in (2, 4):
+        pr = closed_loop.period(tau)
+        assert pr.k_star == 0 and pr.iterations[0].freeze.stable
+    # 多轮反馈后冻结分支（τ=1、τ=3）：非 k=0 冻结且四条件全真
+    for tau in (1, 3):
+        pr = closed_loop.period(tau)
+        assert pr.k_star >= 1
+        assert not pr.iterations[-1].freeze.kmax_forced, "K_max 内正常收敛冻结"
 
 
 @pytest.fixture(scope="module")

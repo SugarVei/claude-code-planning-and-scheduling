@@ -44,8 +44,13 @@ def evaluate_cut_criterion(
     scheduler: SchedulerAdapter,
     cap_eff_row: dict[int, float] | None = None,
     seeds: list[int] | None = None,
+    restart_reps: list | None = None,
 ) -> CutDecision:
-    """对当前待冻结周期 τ 的计划量 q_τ 执行三步割生成判据。"""
+    """对当前待冻结周期 τ 的计划量 q_τ 执行三步割生成判据。
+
+    restart_reps：可选，滚动控制器已完成的 N_restart 次重启代表解
+    （RepresentativeResult 列表）；提供时判据①直接复用，不再重复求解。
+    """
     seeds = seeds if seeds is not None else list(range(1, problem.n_restart + 1))
     cap_row = {
         j: (cap_eff_row or {}).get(j, problem.capacity[j][tau])
@@ -57,18 +62,30 @@ def evaluate_cut_criterion(
 
     # ── ① N_restart 重启检验 ──
     restarts = []
-    for s in seeds:
-        front = scheduler.solve(problem, jobs, tau, seed=s)
-        rep = select_representative(problem, front)
-        restarts.append(
-            {
-                "seed": s,
-                "cmax": rep.solution.cmax,
-                "ot": rep.solution.ot,
-                "rho": rep.solution.rho,
-                "fallback": rep.is_fallback,
-            }
-        )
+    if restart_reps is not None:
+        for i, rep in enumerate(restart_reps):
+            restarts.append(
+                {
+                    "seed": seeds[i] if i < len(seeds) else None,
+                    "cmax": rep.solution.cmax,
+                    "ot": rep.solution.ot,
+                    "rho": rep.solution.rho,
+                    "fallback": rep.is_fallback,
+                }
+            )
+    else:
+        for s in seeds:
+            front = scheduler.solve(problem, jobs, tau, seed=s)
+            rep = select_representative(problem, front)
+            restarts.append(
+                {
+                    "seed": s,
+                    "cmax": rep.solution.cmax,
+                    "ot": rep.solution.ot,
+                    "rho": rep.solution.rho,
+                    "fallback": rep.is_fallback,
+                }
+            )
     diag["restarts"] = restarts
     if any(not r["fallback"] for r in restarts):
         return CutDecision(False, frozenset(), "acceptable", diag)
