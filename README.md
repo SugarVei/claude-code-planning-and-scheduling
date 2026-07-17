@@ -17,6 +17,7 @@ src/data/problem_data.py        # ProblemData 数据类（字段注释 = 论文�
 src/data/lot_sizing.py          # 子批化映射 q^plan → I^sch（4.8.1 节）
 src/data/validators.py          # 数据完整性校验
 src/data/excel_adapter.py       # V-toy-1 读入器 + Y模板结构读入骨架
+src/planning/milp_model.py      # 泛化计划层 MILP（数据驱动；含三通道反馈接口）
 tests/test_vtoy1_workbook.py    # 金标工作簿完整性回归（锁定关键参数与触发机关）
 tests/test_regression_vtoy1.py  # A01~A14 断言（随实现逐步点亮）
 ```
@@ -32,16 +33,20 @@ pytest -m regression
 **任何阶段结束时本套件必须全绿（无 FAILED）**；金标数据 `data/vtoy1.xlsx`
 的任何意外改动都会使完整性测试变红。
 
-## 当前状态（Stage 1 已完成）
+## 当前状态（Stage 2 已完成）
 
 本仓库从零构建（不存在历史 V-toy 实现），Stage 0 冻结的基线为
 **金标算例数据 + A01~A14 断言规格**（tag: `stage0-foundation`）。
 
-- Stage 1：L1 数据层完成 —— `ProblemData`（§5 字段规范，注释标注论文符号）、
-  校验器、V-toy-1 金标读入器（读入结果逐项对照金标数值）、子批化映射
-  （4.8.1 节）、SDST 查表、式(3-3) 需求聚合（动态到达）、Y模板结构读入骨架；
-- 回归进度：**A01（子批化）、A02（SDST 查表）已点亮**，A03~A14 为 skip 占位
-  （点亮映射见 tests/test_regression_vtoy1.py 文件头）；
-- 测试合计：33 通过 + 12 占位跳过。
+- Stage 1：L1 数据层 —— `ProblemData`、校验器、V-toy-1 金标读入器、
+  子批化映射（4.8.1 节）、SDST 查表、式(3-3) 需求聚合、Y模板结构骨架；
+- Stage 2：L2 计划层 MILP —— 完全由 `ProblemData` 驱动（产品/阶段/周期数
+  任意）；变量 q/Y/U/Inv/Back/OT；含三通道反馈接口（Δc 风险惩罚项、
+  Cap^eff 产能覆盖、式(5-9) 不可行组合割）与期末闭合约束；金标 τ=1/τ=3
+  计划层场景精确复现（含"移C 72<112"与"二者接近"tie）；目标函数口径由
+  金标轨迹反推（启动计费+窗口冷启动、无 c_p·q 项，见模块 docstring，
+  待与论文式(3-x) 最终核对）；
+- 回归进度：**A01、A02 已点亮**，A03~A14 为 skip 占位；
+- 测试合计：43 通过 + 12 占位跳过。
 
-下一阶段：Stage 2 —— 泛化计划层 MILP（见 docs/SYSTEM_DESIGN.md §6）。
+下一阶段：Stage 3 —— 参数化调度适配器（见 docs/SYSTEM_DESIGN.md §6）。
