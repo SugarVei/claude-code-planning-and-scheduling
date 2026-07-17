@@ -58,6 +58,7 @@ class PlanningInputs:
     delta_c: dict[tuple[str, int], float] = field(default_factory=dict)  # Δc_{p,t}（通道1）
     cap_eff: dict[tuple[int, int], float] = field(default_factory=dict)  # Cap^eff_{j,t}（通道2）
     cuts: tuple[tuple[frozenset[str], int], ...] = ()       # 不可行组合割 (C, t)（通道3）
+    relax_terminal: bool = False   # True=松弛期末闭合（割+闭合冲突致不可行时的保护回退）
 
 
 @dataclass
@@ -139,8 +140,8 @@ def solve_planning(problem: ProblemData, inputs: PlanningInputs) -> PlanningSolu
         if t_cut in window:
             solver.Add(solver.Sum(y[p, t_cut] for p in combo) <= len(combo) - 1)
 
-    # ── 期末闭合：窗口含 T_max 时 Back_{p,T_max}=0 ──
-    if problem.t_max in window:
+    # ── 期末闭合：窗口含 T_max 时 Back_{p,T_max}=0（可松弛，见口径偏差3）──
+    if problem.t_max in window and not inputs.relax_terminal:
         for p in products:
             solver.Add(back[p, problem.t_max] == 0)
 
@@ -151,7 +152,18 @@ def solve_planning(problem: ProblemData, inputs: PlanningInputs) -> PlanningSolu
     risk = solver.Sum(
         inputs.delta_c.get((p, t), 0.0) * q[p, t] for p in products for t in window
     )
-    solver.Minimize(holding + backlog + startup + risk)
+    objective = holding + backlog + startup + risk
+    if inputs.relax_terminal and problem.t_max in window:
+        # 松弛模式字典序：先最小化期末欠交总量（"只移出装不下的"，保护处理
+        # 语义；否则口径偏差1的"不产省启动费"病态在无闭合锚点时复活），
+        # 再在该上界下优化原目标
+        terminal_back = solver.Sum(back[p, problem.t_max] for p in products)
+        solver.Minimize(terminal_back)
+        status = solver.Solve()
+        if status not in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE):
+            raise ValueError(f"计划层 MILP 无可行解（solver status={status}）")
+        solver.Add(terminal_back <= terminal_back.solution_value() + 1e-6)
+    solver.Minimize(objective)
 
     status = solver.Solve()
     if status not in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE):
@@ -230,7 +242,7 @@ def verify_solution(
             if active > len(combo) - 1:
                 violations.append(f"割约束违反 C={set(combo)} t={t_cut}")
 
-    if problem.t_max in window:
+    if problem.t_max in window and not inputs.relax_terminal:
         for p in problem.products:
             if sol.back[p][problem.t_max] > tol:
                 violations.append(f"期末闭合违反 Back[{p}][{problem.t_max}]>0")

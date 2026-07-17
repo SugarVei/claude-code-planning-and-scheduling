@@ -25,7 +25,7 @@ from src.scheduling.exact_cpsat import CpSatScheduler
 def main() -> None:
     out_dir = sys.argv[1] if len(sys.argv) > 1 else "results/sample_y_style"
     problem = load_y_style("data/sample_y_style.xlsx", n_restart=2)
-    scheduler = CpSatScheduler(time_limit_s=4, require_optimal=False)
+    scheduler = CpSatScheduler(time_limit_s=3, require_optimal=False)
 
     t0 = time.time()
     print("[1/3] 方案 A~D 对比 …", flush=True)

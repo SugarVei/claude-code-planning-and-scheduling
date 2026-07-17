@@ -232,3 +232,26 @@ class TestGeneralization:
         # t=4=T_max 期末闭合强制 Back=0，但割至多允许 2 族在产 → 必然不可行
         with pytest.raises(ValueError, match="无可行解"):
             solve_planning(p, inputs)
+
+    def test_relax_terminal_fallback(self, vtoy1_problem):
+        """同一冲突下松弛期末闭合（保护回退口径）→ 可解，未满足需求计入期末欠交。"""
+        import dataclasses
+
+        p = vtoy1_problem
+        inputs = PlanningInputs(
+            window=(4,),
+            demand={prod: {4: 5} for prod in p.products},
+            cuts=((frozenset(p.products), 4),),
+            relax_terminal=True,
+        )
+        sol = solve_planning(p, inputs)
+        active = [prod for prod in p.products if sol.q[prod][4] > 0]
+        assert len(active) <= 2, "割约束仍然生效"
+        assert sum(sol.back[prod][4] for prod in p.products) == pytest.approx(5), (
+            "被割挤出的一族需求计入期末欠交"
+        )
+        assert verify_solution(p, inputs, sol) == []
+        # 同输入不松弛仍报错（回退仅由控制器在不可行时启用）
+        strict = dataclasses.replace(inputs, relax_terminal=False)
+        with pytest.raises(ValueError):
+            solve_planning(p, strict)

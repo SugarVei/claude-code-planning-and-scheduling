@@ -21,6 +21,7 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 from dataclasses import dataclass, field
 
@@ -160,7 +161,17 @@ def run_rolling(
                 cap_eff=dict(cap_eff),
                 cuts=pool.cuts_for(tau),
             )
-            plan = solve_planning(problem, inputs)
+            try:
+                plan = solve_planning(problem, inputs)
+            except ValueError:
+                # 割/产能收紧与期末闭合冲突（真不可行）→ 松弛期末闭合重解；
+                # 期末未满足需求经式(3-9) 计入欠交（O^unfin 语义），指标可见
+                logger.warning(
+                    "τ=%d k=%d：计划层不可行（割/产能与期末闭合冲突），松弛期末闭合重解",
+                    tau, k,
+                )
+                inputs = dataclasses.replace(inputs, relax_terminal=True)
+                plan = solve_planning(problem, inputs)
             q_tau = {p: plan.q[p][tau] for p in problem.products}
             jobs = build_jobs(problem, q_tau)
 
