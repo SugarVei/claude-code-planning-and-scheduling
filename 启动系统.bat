@@ -12,7 +12,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-python -c "import streamlit, plotly, pandas, ortools, openpyxl, numpy" >nul 2>nul
+python -c "import PyQt5, matplotlib, ortools, openpyxl, numpy" >nul 2>nul
 if errorlevel 1 (
     echo [首次运行] 正在安装依赖（约 2~5 分钟，仅需一次）...
     python -m pip install -r requirements.txt -r app\requirements-app.txt
@@ -23,9 +23,6 @@ if errorlevel 1 (
     )
 )
 
-echo.
-echo  正在启动系统，浏览器将自动打开 http://localhost:8501
-echo  使用完毕后关闭本窗口（或按 Ctrl+C）即可停止系统。
-echo.
-python -m streamlit run app\webapp.py --server.port 8501
-pause
+echo 正在启动桌面版系统窗口...
+python -m app.desktop
+if errorlevel 1 pause

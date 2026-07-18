@@ -1,4 +1,8 @@
-# 可视化界面附加依赖（核心依赖见仓库根 requirements.txt）
+# 界面附加依赖（核心依赖见仓库根 requirements.txt）
+# 桌面版（python -m app.desktop）：
+PyQt5>=5.15
+matplotlib>=3.7
+# 网页版（streamlit run app/webapp.py，可选保留）：
 streamlit>=1.35
 plotly>=5.20
 pandas>=2.0
