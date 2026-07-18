@@ -2,6 +2,7 @@
 import subprocess
 import sys
 
+import openpyxl
 import pytest
 
 from tests.conftest import REPO_ROOT
@@ -52,3 +53,14 @@ def test_bad_inputs_rejected(tmp_path):
     assert "不存在" in (r.stdout + r.stderr)
     r2 = _run_cli(["run", "--input", "data/vtoy1.xlsx", "--scheme", "X"])
     assert r2.returncode != 0
+
+
+def test_unrecognized_workbook_format_rejected(tmp_path):
+    """既非 V-toy-1 亦非 Y企业模板格式的工作簿：明确报错。"""
+    bad_wb = tmp_path / "unrecognized.xlsx"
+    wb = openpyxl.Workbook()
+    wb.active.title = "not_a_known_sheet"
+    wb.save(bad_wb)
+    r = _run_cli(["run", "--input", str(bad_wb), "--scheme", "C"])
+    assert r.returncode != 0
+    assert "无法识别的工作簿格式" in (r.stdout + r.stderr)
