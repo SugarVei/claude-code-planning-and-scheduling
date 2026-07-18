@@ -50,7 +50,13 @@ python3 -m src.cli run --input data/vtoy1.xlsx --scheme C --strict --time-limit 
 
 # 示例数据全套实验（四方案+消融+敏感性 → 表5-1~5-4）
 python3 scripts/run_sample_experiments.py
+
+# 可视化界面（浏览器操作：导入数据 → 运行 → 甘特图/Pareto/逐周期总览/导出）
+pip install -r app/requirements-app.txt
+streamlit run app/webapp.py
 ```
+
+界面截图见 `docs/screenshots/`（总览页与单周期钻取页）。
 
 `regression` 套件 = 金标工作簿完整性测试 + V-toy-1 断言 A01~A14。
 **任何阶段结束时本套件必须全绿（无 FAILED）**；金标数据 `data/vtoy1.xlsx`

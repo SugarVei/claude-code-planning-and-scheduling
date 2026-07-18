@@ -83,6 +83,7 @@ class IterationRecord:
     cut_decision: CutDecision | None             # 通道3判据（仅不可接受时评估）
     new_cuts: frozenset                          # 本轮 Δℋ^(k)
     freeze: FreezeCheck
+    front: list[ScheduleSolution] = field(default_factory=list)  # 合并非支配前沿（可视化用）
 
 
 @dataclass
@@ -183,7 +184,7 @@ def run_rolling(
                 rep = select_representative(problem, union)
                 sched = rep.solution
             else:
-                fronts, restart_reps, rep = [], [], None
+                fronts, restart_reps, rep, union = [], [], None, []
                 sched = _empty_schedule(problem)
             feas = is_feasible_flag(problem, sched.rho)
 
@@ -238,6 +239,7 @@ def run_rolling(
                 feas=feas, channels=channels, cut_decision=cut_decision,
                 new_cuts=new_cuts,
                 freeze=FreezeCheck(feas_ok, cmax_ok, no_new_cuts, stable, frozen, kmax_forced),
+                front=list(union),
             )
             iterations.append(record)
             if force_freeze_k0:
