@@ -37,18 +37,26 @@ tests/test_vtoy1_workbook.py    # 金标工作簿完整性回归（锁定关键�
 tests/test_regression_vtoy1.py  # A01~A14 断言（随实现逐步点亮）
 ```
 
-## 回归基线运行方式
+## 使用方式
 
 ```bash
 pip install -r requirements.txt
-pytest -m regression
+pytest -m regression        # 金标回归（A01~A14 + 工作簿完整性）
+pytest                      # 全量测试
+
+# 一条命令运行方案并导出（输入格式自动识别：V-toy-1 / Y企业模板）
+python3 -m src.cli run --input data/sample_y_style.xlsx --scheme C --output results/my_run
+python3 -m src.cli run --input data/vtoy1.xlsx --scheme C --strict --time-limit 120
+
+# 示例数据全套实验（四方案+消融+敏感性 → 表5-1~5-4）
+python3 scripts/run_sample_experiments.py
 ```
 
 `regression` 套件 = 金标工作簿完整性测试 + V-toy-1 断言 A01~A14。
 **任何阶段结束时本套件必须全绿（无 FAILED）**；金标数据 `data/vtoy1.xlsx`
 的任何意外改动都会使完整性测试变红。
 
-## 当前状态（Stage 6 已完成：示例数据与实验框架）
+## 当前状态（Stage 0~7 全部完成）
 
 本仓库从零构建（不存在历史 V-toy 实现），Stage 0 冻结的基线为
 **金标算例数据 + A01~A14 断言规格**（tag: `stage0-foundation`）。
@@ -83,8 +91,8 @@ pytest -m regression
   B（滚动无反馈）/C（完整三通道）/D（去成本修正）；五项指标；
   FeedbackConfig 一键消融 + 权重敏感性批量实验；表5-1~5-4 与图5-2
   数据导出（CSV utf-8-sig + 汇总 xlsx）；
+- Stage 7：薄壳 CLI（`python3 -m src.cli run`，输入格式自动识别、
+  方案/调度器/时限可选、指标与表格导出）；本仓库从未引入 Web 入口，
+  原问题清单中的 Web 路径穿越漏洞不适用；
 - 回归进度：**A01~A14 全部点亮（14/14）**；
-- 测试合计：109 通过，0 跳过。
-
-剩余：Stage 7（可选薄壳 CLI）。示例实验一键复跑：
-`python3 scripts/run_sample_experiments.py`。
+- 测试合计：113 通过，0 跳过。
